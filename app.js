@@ -41,7 +41,8 @@ function renderBalls(container, nums, { bonus = null } = {}) {
     el.textContent = String(n);
 
     const { bg, bd } = numberColorStyle(n);
-    el.style.background = `linear-gradient(180deg, ${bg}, rgba(0,0,0,0))`;
+    // 공 배경은 CSS 3D 하이라이트 위에 깔리는 "기본 톤"만 설정
+    el.style.background = `radial-gradient(circle at 30% 30%, rgba(255,255,255,.35), rgba(255,255,255,0) 40%), linear-gradient(180deg, ${bg}, rgba(0,0,0,0))`;
     el.style.borderColor = bd;
     return el;
   };
@@ -59,6 +60,138 @@ function toast(el, message) {
 
 const STORAGE_KEY = "lotto_history_v1";
 const MAX_HISTORY = 30;
+
+const OFFICIAL_KEY = "lotto_official_2025_v1";
+const OFFICIAL_META_KEY = "lotto_official_2025_meta_v1";
+const OFFICIAL_FROM_DATE = "2025-01-01";
+const LOTTO_START_DATE = "2002-12-07"; // 1회차
+const LOTTO_API = "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=";
+
+/**
+ * @returns {{items: {drwNo:number, drwNoDate:string, nums:number[], bonus:number}[], meta: {updatedAt:string, fromDate:string, toDate:string, count:number} | null}}
+ */
+function loadOfficialCache() {
+  try {
+    const raw = window.localStorage.getItem(OFFICIAL_KEY);
+    const metaRaw = window.localStorage.getItem(OFFICIAL_META_KEY);
+    const items = raw ? JSON.parse(raw) : [];
+    const meta = metaRaw ? JSON.parse(metaRaw) : null;
+    if (!Array.isArray(items)) return { items: [], meta: null };
+    const cleaned = items
+      .filter(
+        (x) =>
+          x &&
+          Number.isInteger(x.drwNo) &&
+          typeof x.drwNoDate === "string" &&
+          Array.isArray(x.nums) &&
+          x.nums.length === 6 &&
+          x.nums.every((n) => Number.isInteger(n)) &&
+          Number.isInteger(x.bonus)
+      )
+      .map((x) => ({
+        drwNo: x.drwNo,
+        drwNoDate: x.drwNoDate,
+        nums: x.nums,
+        bonus: x.bonus,
+      }));
+    return { items: cleaned, meta };
+  } catch {
+    return { items: [], meta: null };
+  }
+}
+
+function saveOfficialCache(items) {
+  try {
+    window.localStorage.setItem(OFFICIAL_KEY, JSON.stringify(items));
+    const updatedAt = formatNow();
+    const toDate = items[0]?.drwNoDate ?? formatNow().split(" ")[0];
+    const meta = {
+      updatedAt,
+      fromDate: OFFICIAL_FROM_DATE,
+      toDate,
+      count: items.length,
+    };
+    window.localStorage.setItem(OFFICIAL_META_KEY, JSON.stringify(meta));
+  } catch {
+    // ignore
+  }
+}
+
+function clearOfficialCache() {
+  try {
+    window.localStorage.removeItem(OFFICIAL_KEY);
+    window.localStorage.removeItem(OFFICIAL_META_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function parseYmdToDate(ymd) {
+  // ymd: "YYYY-MM-DD"
+  const [y, m, d] = ymd.split("-").map((x) => Number(x));
+  return new Date(y, (m ?? 1) - 1, d ?? 1);
+}
+
+function estimateLatestDrawNo() {
+  const start = parseYmdToDate(LOTTO_START_DATE);
+  const now = new Date();
+  const weeks = Math.floor((now - start) / (7 * 24 * 60 * 60 * 1000));
+  return weeks + 1;
+}
+
+async function fetchDraw(drwNo) {
+  const res = await fetch(`${LOTTO_API}${drwNo}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || data.returnValue !== "success") return null;
+  const nums = [
+    data.drwtNo1,
+    data.drwtNo2,
+    data.drwtNo3,
+    data.drwtNo4,
+    data.drwtNo5,
+    data.drwtNo6,
+  ].map((n) => Number(n));
+  return {
+    drwNo: Number(data.drwNo),
+    drwNoDate: String(data.drwNoDate), // YYYY-MM-DD
+    nums,
+    bonus: Number(data.bnusNo),
+  };
+}
+
+async function loadOfficial2025ToNow(onProgress) {
+  // 1) 최신 회차 감 잡고, 실제 성공하는 회차로 보정
+  let latest = estimateLatestDrawNo();
+  let latestData = null;
+  for (let i = 0; i < 12; i++) {
+    onProgress?.(`최신 회차 확인 중… (${latest})`);
+    latestData = await fetchDraw(latest);
+    if (latestData) break;
+    latest -= 1;
+  }
+  if (!latestData) throw new Error("최신 회차를 찾지 못했어요. 인터넷 연결을 확인해 주세요.");
+
+  // 2) 2025-01-01 이후만 역순으로 수집
+  const from = parseYmdToDate(OFFICIAL_FROM_DATE);
+  const items = [];
+
+  let currentNo = latestData.drwNo;
+  while (currentNo >= 1) {
+    const item = currentNo === latestData.drwNo ? latestData : await fetchDraw(currentNo);
+    if (!item) {
+      currentNo -= 1;
+      continue;
+    }
+    const d = parseYmdToDate(item.drwNoDate);
+    if (d < from) break;
+    items.push(item);
+    onProgress?.(`불러오는 중… ${item.drwNo}회 (${item.drwNoDate})`);
+    currentNo -= 1;
+  }
+
+  return items; // 최신이 앞
+}
 
 /**
  * @returns {{round:number, ts:string, nums:number[], bonus:number|null, sort:boolean, withBonus:boolean}[]}
@@ -144,11 +277,123 @@ function main() {
   const historyTbody = document.getElementById("historyTbody");
   const historyEmpty = document.getElementById("historyEmpty");
 
+  const btnLoadOfficial = document.getElementById("btnLoadOfficial");
+  const btnClearOfficial = document.getElementById("btnClearOfficial");
+  const btnCompareNow = document.getElementById("btnCompareNow");
+  const chkShowOnly3 = document.getElementById("chkShowOnly3");
+  const officialStatus = document.getElementById("officialStatus");
+  const compareSummary = document.getElementById("compareSummary");
+  const compareWrap = document.getElementById("compareWrap");
+  const compareTbody = document.getElementById("compareTbody");
+
   /** @type {{nums:number[], bonus:number|null} | null} */
   let last = null;
 
   /** @type {{round:number, ts:string, nums:number[], bonus:number|null, sort:boolean, withBonus:boolean}[]} */
   let history = loadHistory();
+
+  /** @type {{drwNo:number, drwNoDate:string, nums:number[], bonus:number}[]} */
+  let official = loadOfficialCache().items;
+  let officialMeta = loadOfficialCache().meta;
+
+  const renderOfficialStatus = () => {
+    if (official.length === 0) {
+      officialStatus.textContent =
+        "인터넷이 연결되어 있어야 불러올 수 있어요. (불러온 데이터는 브라우저에 저장됩니다)";
+      btnClearOfficial.disabled = true;
+      btnCompareNow.disabled = true;
+      return;
+    }
+    const updatedAt = officialMeta?.updatedAt ?? "";
+    officialStatus.textContent = `저장된 당첨번호: ${official.length}개 (업데이트: ${updatedAt || "알 수 없음"})`;
+    btnClearOfficial.disabled = false;
+    btnCompareNow.disabled = last == null;
+  };
+
+  const compareWithOfficial = () => {
+    if (!last || official.length === 0) return;
+    const my = new Set(last.nums);
+    const myBonus = last.bonus;
+
+    const results = official.map((o) => {
+      const hit = o.nums.filter((n) => my.has(n)).length;
+      const bonusHit = myBonus != null && o.bonus === myBonus;
+      return { ...o, hit, bonusHit };
+    });
+
+    const filtered = chkShowOnly3.checked ? results.filter((r) => r.hit >= 3) : results;
+    filtered.sort((a, b) => (b.hit - a.hit) || (b.drwNo - a.drwNo));
+
+    const top = filtered.slice(0, 50);
+    compareTbody.innerHTML = "";
+    top.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.dataset.drwno = String(r.drwNo);
+
+      const tdRound = document.createElement("td");
+      const roundBtn = document.createElement("button");
+      roundBtn.type = "button";
+      roundBtn.className = "roundLink";
+      roundBtn.textContent = `${r.drwNo}회차`;
+      roundBtn.dataset.action = "copyOfficial";
+      const roundDate = document.createElement("div");
+      roundDate.className = "roundDate";
+      roundDate.textContent = `(${r.drwNoDate})`;
+      tdRound.appendChild(roundBtn);
+      tdRound.appendChild(roundDate);
+
+      const tdNums = document.createElement("td");
+      const numsWrap = document.createElement("div");
+      numsWrap.className = "numsCell";
+      r.nums.forEach((n) => {
+        const el = document.createElement("div");
+        el.className = `miniBall ${ballThemeClass(n)}`;
+        el.textContent = String(n);
+        // 내 번호와 일치하면 테두리 강조
+        if (my.has(n)) el.style.outline = "2px solid rgba(26,115,232,.55)";
+        numsWrap.appendChild(el);
+      });
+      const plus = document.createElement("span");
+      plus.className = "plus";
+      plus.textContent = "+";
+      numsWrap.appendChild(plus);
+      const bEl = document.createElement("div");
+      bEl.className = `miniBall ${ballThemeClass(r.bonus)} miniBall--bonus`;
+      bEl.textContent = String(r.bonus);
+      if (myBonus != null && r.bonus === myBonus) bEl.style.outline = "2px solid rgba(34,197,94,.65)";
+      numsWrap.appendChild(bEl);
+      tdNums.appendChild(numsWrap);
+
+      const tdHit = document.createElement("td");
+      const pill = document.createElement("span");
+      pill.className = "matchPill";
+      pill.innerHTML = `<strong>${r.hit}</strong>개${r.bonusHit ? ' <span class="bonusHit">+B</span>' : ""}`;
+      tdHit.appendChild(pill);
+
+      const tdActions = document.createElement("td");
+      const btns = document.createElement("div");
+      btns.className = "rowBtns";
+      const btnCopyRow = document.createElement("button");
+      btnCopyRow.type = "button";
+      btnCopyRow.className = "btn btn-mini";
+      btnCopyRow.textContent = "복사";
+      btnCopyRow.dataset.action = "copyRow";
+      btns.appendChild(btnCopyRow);
+      tdActions.appendChild(btns);
+
+      tr.appendChild(tdRound);
+      tr.appendChild(tdNums);
+      tr.appendChild(tdHit);
+      tr.appendChild(tdActions);
+      compareTbody.appendChild(tr);
+    });
+
+    const shown = top.length;
+    const total = filtered.length;
+    compareSummary.textContent = `표시: ${shown}개 (조건 만족: ${total}개 / 전체: ${official.length}개)`;
+    compareWrap.style.display = shown ? "" : "none";
+    if (!shown) compareSummary.textContent = "조건에 맞는 회차가 없어요. (필터를 꺼보세요)";
+  };
 
   const setCurrentFromEntry = (entry) => {
     chkSort.checked = !!entry.sort;
@@ -257,6 +502,7 @@ function main() {
 
     btnRedraw.disabled = false;
     btnCopy.disabled = false;
+    renderOfficialStatus();
 
     // 기록 저장 (최신이 위로)
     const withBonus = chkBonus.checked;
@@ -320,12 +566,70 @@ function main() {
     toast(toastEl, "기록을 불러왔어요.");
   });
 
+  btnLoadOfficial.addEventListener("click", async () => {
+    btnLoadOfficial.disabled = true;
+    btnCompareNow.disabled = true;
+    officialStatus.textContent = "불러오기 시작…";
+    try {
+      const items = await loadOfficial2025ToNow((msg) => {
+        officialStatus.textContent = msg;
+      });
+      official = items;
+      saveOfficialCache(items);
+      officialMeta = loadOfficialCache().meta;
+      toast(toastEl, `당첨번호 ${items.length}개를 저장했어요.`);
+    } catch (err) {
+      officialStatus.textContent = err instanceof Error ? err.message : "불러오기에 실패했어요.";
+    } finally {
+      btnLoadOfficial.disabled = false;
+      renderOfficialStatus();
+    }
+  });
+
+  btnClearOfficial.addEventListener("click", () => {
+    clearOfficialCache();
+    official = [];
+    officialMeta = null;
+    compareTbody.innerHTML = "";
+    compareWrap.style.display = "none";
+    compareSummary.textContent = "";
+    renderOfficialStatus();
+    toast(toastEl, "당첨번호 캐시를 삭제했어요.");
+  });
+
+  btnCompareNow.addEventListener("click", () => {
+    compareWithOfficial();
+    toast(toastEl, "비교를 완료했어요.");
+  });
+
+  chkShowOnly3.addEventListener("change", () => {
+    if (!last || official.length === 0) return;
+    compareWithOfficial();
+  });
+
+  compareTbody.addEventListener("click", async (e) => {
+    const target = /** @type {HTMLElement} */ (e.target);
+    const tr = target.closest("tr");
+    if (!tr) return;
+    const drwNo = Number(tr.dataset.drwno);
+    const row = official.find((x) => x.drwNo === drwNo);
+    if (!row) return;
+
+    const action = target.dataset.action;
+    if (action === "copyRow" || action === "copyOfficial") {
+      const text = `${row.drwNo}회(${row.drwNoDate}) ${row.nums.join(", ")} + 보너스 ${row.bonus}`;
+      const ok = await copyTextWithFallback(text);
+      toast(toastEl, ok ? "클립보드에 복사했어요." : "복사에 실패했어요.");
+    }
+  });
+
   // 초기 렌더
   renderHistory();
   if (history[0]) {
     // 가장 최근 기록을 자동 표시(원치 않으면 제거 가능)
     setCurrentFromEntry(history[0]);
   }
+  renderOfficialStatus();
 
   // UX: Enter 키로 추첨
   window.addEventListener("keydown", (e) => {
