@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>로또 번호 추첨기</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="header">
+        <h1 class="title">로또 번호 추첨기</h1>
+        <p class="subtitle">1~45에서 6개를 중복 없이 랜덤으로 뽑습니다.</p>
+      </header>
+
+      <section class="card" aria-label="로또 번호 추첨">
+        <div class="controls">
+          <button id="btnDraw" class="btn btn-primary" type="button">추첨</button>
+          <button id="btnRedraw" class="btn" type="button" disabled>재추첨</button>
+          <button id="btnCopy" class="btn" type="button" disabled>복사</button>
+        </div>
+
+        <div class="options">
+          <label class="option">
+            <input id="chkSort" type="checkbox" checked />
+            오름차순 정렬
+          </label>
+          <label class="option">
+            <input id="chkBonus" type="checkbox" />
+            보너스 번호(1개) 포함
+          </label>
+        </div>
+
+        <div class="result" aria-live="polite">
+          <div id="balls" class="balls" role="group" aria-label="추첨된 번호"></div>
+          <p id="resultText" class="resultText">아직 추첨하지 않았습니다.</p>
+        </div>
+
+        <section class="history" aria-label="최근 기록">
+          <div class="historyHeader">
+            <h2 class="historyTitle">최근 기록</h2>
+            <div class="historyActions">
+              <button id="btnClearHistory" class="btn btn-danger" type="button" disabled>
+                기록 삭제
+              </button>
+            </div>
+          </div>
+
+          <p id="historyEmpty" class="historyEmpty">아직 저장된 기록이 없습니다.</p>
+
+          <div class="tableWrap" role="region" aria-label="추첨 기록 표" tabindex="0">
+            <table class="historyTable">
+              <thead>
+                <tr>
+                  <th class="colRound">추첨일자<br /><span class="thSub">(추첨일)</span></th>
+                  <th class="colNums">로또당첨번호</th>
+                  <th class="colActions" aria-label="동작"></th>
+                </tr>
+              </thead>
+              <tbody id="historyTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="meta">
+          <span id="timestamp" class="timestamp"></span>
+          <span id="toast" class="toast" aria-live="polite" aria-atomic="true"></span>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <p class="footnote">
+          팁: 파일을 더블클릭으로 열어도 동작합니다. (서버 불필요)
+        </p>
+      </footer>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>
