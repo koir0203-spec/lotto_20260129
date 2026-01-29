@@ -61,137 +61,8 @@ function toast(el, message) {
 const STORAGE_KEY = "lotto_history_v1";
 const MAX_HISTORY = 30;
 
-const OFFICIAL_KEY = "lotto_official_2025_v1";
-const OFFICIAL_META_KEY = "lotto_official_2025_meta_v1";
-const OFFICIAL_FROM_DATE = "2025-01-01";
-const LOTTO_START_DATE = "2002-12-07"; // 1회차
-const LOTTO_API = "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=";
-
-/**
- * @returns {{items: {drwNo:number, drwNoDate:string, nums:number[], bonus:number}[], meta: {updatedAt:string, fromDate:string, toDate:string, count:number} | null}}
- */
-function loadOfficialCache() {
-  try {
-    const raw = window.localStorage.getItem(OFFICIAL_KEY);
-    const metaRaw = window.localStorage.getItem(OFFICIAL_META_KEY);
-    const items = raw ? JSON.parse(raw) : [];
-    const meta = metaRaw ? JSON.parse(metaRaw) : null;
-    if (!Array.isArray(items)) return { items: [], meta: null };
-    const cleaned = items
-      .filter(
-        (x) =>
-          x &&
-          Number.isInteger(x.drwNo) &&
-          typeof x.drwNoDate === "string" &&
-          Array.isArray(x.nums) &&
-          x.nums.length === 6 &&
-          x.nums.every((n) => Number.isInteger(n)) &&
-          Number.isInteger(x.bonus)
-      )
-      .map((x) => ({
-        drwNo: x.drwNo,
-        drwNoDate: x.drwNoDate,
-        nums: x.nums,
-        bonus: x.bonus,
-      }));
-    return { items: cleaned, meta };
-  } catch {
-    return { items: [], meta: null };
-  }
-}
-
-function saveOfficialCache(items) {
-  try {
-    window.localStorage.setItem(OFFICIAL_KEY, JSON.stringify(items));
-    const updatedAt = formatNow();
-    const toDate = items[0]?.drwNoDate ?? formatNow().split(" ")[0];
-    const meta = {
-      updatedAt,
-      fromDate: OFFICIAL_FROM_DATE,
-      toDate,
-      count: items.length,
-    };
-    window.localStorage.setItem(OFFICIAL_META_KEY, JSON.stringify(meta));
-  } catch {
-    // ignore
-  }
-}
-
-function clearOfficialCache() {
-  try {
-    window.localStorage.removeItem(OFFICIAL_KEY);
-    window.localStorage.removeItem(OFFICIAL_META_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-function parseYmdToDate(ymd) {
-  // ymd: "YYYY-MM-DD"
-  const [y, m, d] = ymd.split("-").map((x) => Number(x));
-  return new Date(y, (m ?? 1) - 1, d ?? 1);
-}
-
-function estimateLatestDrawNo() {
-  const start = parseYmdToDate(LOTTO_START_DATE);
-  const now = new Date();
-  const weeks = Math.floor((now - start) / (7 * 24 * 60 * 60 * 1000));
-  return weeks + 1;
-}
-
-async function fetchDraw(drwNo) {
-  const res = await fetch(`${LOTTO_API}${drwNo}`, { cache: "no-store" });
-  if (!res.ok) return null;
-  const data = await res.json();
-  if (!data || data.returnValue !== "success") return null;
-  const nums = [
-    data.drwtNo1,
-    data.drwtNo2,
-    data.drwtNo3,
-    data.drwtNo4,
-    data.drwtNo5,
-    data.drwtNo6,
-  ].map((n) => Number(n));
-  return {
-    drwNo: Number(data.drwNo),
-    drwNoDate: String(data.drwNoDate), // YYYY-MM-DD
-    nums,
-    bonus: Number(data.bnusNo),
-  };
-}
-
-async function loadOfficial2025ToNow(onProgress) {
-  // 1) 최신 회차 감 잡고, 실제 성공하는 회차로 보정
-  let latest = estimateLatestDrawNo();
-  let latestData = null;
-  for (let i = 0; i < 12; i++) {
-    onProgress?.(`최신 회차 확인 중… (${latest})`);
-    latestData = await fetchDraw(latest);
-    if (latestData) break;
-    latest -= 1;
-  }
-  if (!latestData) throw new Error("최신 회차를 찾지 못했어요. 인터넷 연결을 확인해 주세요.");
-
-  // 2) 2025-01-01 이후만 역순으로 수집
-  const from = parseYmdToDate(OFFICIAL_FROM_DATE);
-  const items = [];
-
-  let currentNo = latestData.drwNo;
-  while (currentNo >= 1) {
-    const item = currentNo === latestData.drwNo ? latestData : await fetchDraw(currentNo);
-    if (!item) {
-      currentNo -= 1;
-      continue;
-    }
-    const d = parseYmdToDate(item.drwNoDate);
-    if (d < from) break;
-    items.push(item);
-    onProgress?.(`불러오는 중… ${item.drwNo}회 (${item.drwNoDate})`);
-    currentNo -= 1;
-  }
-
-  return items; // 최신이 앞
-}
+// 오프라인용 내장 데이터(window.OFFICIAL_2025_NOW)를 사용합니다.
+// 데이터 출처: https://smok95.github.io/lotto/results/all.json
 
 /**
  * @returns {{round:number, ts:string, nums:number[], bonus:number|null, sort:boolean, withBonus:boolean}[]}
@@ -277,8 +148,6 @@ function main() {
   const historyTbody = document.getElementById("historyTbody");
   const historyEmpty = document.getElementById("historyEmpty");
 
-  const btnLoadOfficial = document.getElementById("btnLoadOfficial");
-  const btnClearOfficial = document.getElementById("btnClearOfficial");
   const btnCompareNow = document.getElementById("btnCompareNow");
   const chkShowOnly3 = document.getElementById("chkShowOnly3");
   const officialStatus = document.getElementById("officialStatus");
@@ -292,107 +161,126 @@ function main() {
   /** @type {{round:number, ts:string, nums:number[], bonus:number|null, sort:boolean, withBonus:boolean}[]} */
   let history = loadHistory();
 
-  /** @type {{drwNo:number, drwNoDate:string, nums:number[], bonus:number}[]} */
-  let official = loadOfficialCache().items;
-  let officialMeta = loadOfficialCache().meta;
+  /** @type {{drawNo:number, date:string, nums:number[], bonus:number}[]} */
+  let official = Array.isArray(window.OFFICIAL_2025_NOW) ? window.OFFICIAL_2025_NOW : [];
 
   const renderOfficialStatus = () => {
     if (official.length === 0) {
-      officialStatus.textContent =
-        "인터넷이 연결되어 있어야 불러올 수 있어요. (불러온 데이터는 브라우저에 저장됩니다)";
-      btnClearOfficial.disabled = true;
+      officialStatus.textContent = "오프라인 당첨번호 데이터가 없습니다. (`official_2025_now.js` 확인)";
       btnCompareNow.disabled = true;
       return;
     }
-    const updatedAt = officialMeta?.updatedAt ?? "";
-    officialStatus.textContent = `저장된 당첨번호: ${official.length}개 (업데이트: ${updatedAt || "알 수 없음"})`;
-    btnClearOfficial.disabled = false;
-    btnCompareNow.disabled = last == null;
+    const first = official[0];
+    const lastItem = official[official.length - 1];
+    officialStatus.textContent = `내장 당첨번호: ${official.length}개 (${lastItem?.date} ~ ${first?.date})`;
+    btnCompareNow.disabled = history.length === 0;
   };
 
-  const compareWithOfficial = () => {
-    if (!last || official.length === 0) return;
-    const my = new Set(last.nums);
-    const myBonus = last.bonus;
-
-    const results = official.map((o) => {
-      const hit = o.nums.filter((n) => my.has(n)).length;
+  const bestMatchForMyEntry = (entry) => {
+    const mySet = new Set(entry.nums);
+    const myBonus = entry.bonus;
+    let best = null;
+    for (const o of official) {
+      const hit = o.nums.filter((n) => mySet.has(n)).length;
       const bonusHit = myBonus != null && o.bonus === myBonus;
-      return { ...o, hit, bonusHit };
-    });
+      if (!best) {
+        best = { o, hit, bonusHit };
+        continue;
+      }
+      if (hit > best.hit) best = { o, hit, bonusHit };
+      else if (hit === best.hit) {
+        // 동점이면 더 최신 회차 우선
+        if (o.drawNo > best.o.drawNo) best = { o, hit, bonusHit };
+      }
+    }
+    return best;
+  };
 
-    const filtered = chkShowOnly3.checked ? results.filter((r) => r.hit >= 3) : results;
-    filtered.sort((a, b) => (b.hit - a.hit) || (b.drwNo - a.drwNo));
+  const compareMyHistory = () => {
+    if (official.length === 0) return;
+    if (history.length === 0) return;
 
-    const top = filtered.slice(0, 50);
+    const rows = history
+      .map((h) => {
+        const best = bestMatchForMyEntry(h);
+        return { h, best };
+      })
+      .filter((x) => x.best);
+
+    const filtered = chkShowOnly3.checked
+      ? rows.filter((x) => x.best.hit >= 3)
+      : rows;
+
+    // 내 기록 중 "가장 잘 맞은 것" 위로
+    filtered.sort((a, b) => (b.best.hit - a.best.hit) || (b.h.round - a.h.round));
+
     compareTbody.innerHTML = "";
-    top.forEach((r) => {
+    filtered.forEach(({ h, best }) => {
       const tr = document.createElement("tr");
-      tr.dataset.drwno = String(r.drwNo);
 
-      const tdRound = document.createElement("td");
-      const roundBtn = document.createElement("button");
-      roundBtn.type = "button";
-      roundBtn.className = "roundLink";
-      roundBtn.textContent = `${r.drwNo}회차`;
-      roundBtn.dataset.action = "copyOfficial";
-      const roundDate = document.createElement("div");
-      roundDate.className = "roundDate";
-      roundDate.textContent = `(${r.drwNoDate})`;
-      tdRound.appendChild(roundBtn);
-      tdRound.appendChild(roundDate);
+      const tdMy = document.createElement("td");
+      const myBtn = document.createElement("button");
+      myBtn.type = "button";
+      myBtn.className = "roundLink";
+      myBtn.textContent = `${h.round}회차`;
+      myBtn.dataset.action = "loadMy";
+      const myDate = document.createElement("div");
+      myDate.className = "roundDate";
+      myDate.textContent = `(${h.ts})`;
+      tdMy.appendChild(myBtn);
+      tdMy.appendChild(myDate);
 
-      const tdNums = document.createElement("td");
-      const numsWrap = document.createElement("div");
-      numsWrap.className = "numsCell";
-      r.nums.forEach((n) => {
+      const tdMyNums = document.createElement("td");
+      const myWrap = document.createElement("div");
+      myWrap.className = "numsCell";
+      h.nums.forEach((n) => {
         const el = document.createElement("div");
         el.className = `miniBall ${ballThemeClass(n)}`;
         el.textContent = String(n);
-        // 내 번호와 일치하면 테두리 강조
-        if (my.has(n)) el.style.outline = "2px solid rgba(26,115,232,.55)";
-        numsWrap.appendChild(el);
+        myWrap.appendChild(el);
       });
-      const plus = document.createElement("span");
-      plus.className = "plus";
-      plus.textContent = "+";
-      numsWrap.appendChild(plus);
-      const bEl = document.createElement("div");
-      bEl.className = `miniBall ${ballThemeClass(r.bonus)} miniBall--bonus`;
-      bEl.textContent = String(r.bonus);
-      if (myBonus != null && r.bonus === myBonus) bEl.style.outline = "2px solid rgba(34,197,94,.65)";
-      numsWrap.appendChild(bEl);
-      tdNums.appendChild(numsWrap);
+      if (h.bonus != null) {
+        const plus = document.createElement("span");
+        plus.className = "plus";
+        plus.textContent = "+";
+        myWrap.appendChild(plus);
+        const b = document.createElement("div");
+        b.className = `miniBall ${ballThemeClass(h.bonus)} miniBall--bonus`;
+        b.textContent = String(h.bonus);
+        myWrap.appendChild(b);
+      }
+      tdMyNums.appendChild(myWrap);
+
+      const tdOff = document.createElement("td");
+      const offBtn = document.createElement("button");
+      offBtn.type = "button";
+      offBtn.className = "roundLink";
+      offBtn.textContent = `${best.o.drawNo}회차`;
+      offBtn.dataset.action = "copyOfficial";
+      const offDate = document.createElement("div");
+      offDate.className = "roundDate";
+      offDate.textContent = `(${best.o.date})`;
+      tdOff.appendChild(offBtn);
+      tdOff.appendChild(offDate);
 
       const tdHit = document.createElement("td");
       const pill = document.createElement("span");
       pill.className = "matchPill";
-      pill.innerHTML = `<strong>${r.hit}</strong>개${r.bonusHit ? ' <span class="bonusHit">+B</span>' : ""}`;
+      pill.innerHTML = `<strong>${best.hit}</strong>개${best.bonusHit ? ' <span class="bonusHit">+B</span>' : ""}`;
       tdHit.appendChild(pill);
 
-      const tdActions = document.createElement("td");
-      const btns = document.createElement("div");
-      btns.className = "rowBtns";
-      const btnCopyRow = document.createElement("button");
-      btnCopyRow.type = "button";
-      btnCopyRow.className = "btn btn-mini";
-      btnCopyRow.textContent = "복사";
-      btnCopyRow.dataset.action = "copyRow";
-      btns.appendChild(btnCopyRow);
-      tdActions.appendChild(btns);
-
-      tr.appendChild(tdRound);
-      tr.appendChild(tdNums);
+      tr.appendChild(tdMy);
+      tr.appendChild(tdMyNums);
+      tr.appendChild(tdOff);
       tr.appendChild(tdHit);
-      tr.appendChild(tdActions);
       compareTbody.appendChild(tr);
     });
 
-    const shown = top.length;
-    const total = filtered.length;
-    compareSummary.textContent = `표시: ${shown}개 (조건 만족: ${total}개 / 전체: ${official.length}개)`;
+    const shown = filtered.length;
+    compareSummary.textContent = shown
+      ? `일치 기록: ${shown}개 / 내 기록: ${history.length}개`
+      : "조건에 맞는 일치 기록이 없어요. (필터를 꺼보세요)";
     compareWrap.style.display = shown ? "" : "none";
-    if (!shown) compareSummary.textContent = "조건에 맞는 회차가 없어요. (필터를 꺼보세요)";
   };
 
   const setCurrentFromEntry = (entry) => {
@@ -566,58 +454,40 @@ function main() {
     toast(toastEl, "기록을 불러왔어요.");
   });
 
-  btnLoadOfficial.addEventListener("click", async () => {
-    btnLoadOfficial.disabled = true;
-    btnCompareNow.disabled = true;
-    officialStatus.textContent = "불러오기 시작…";
-    try {
-      const items = await loadOfficial2025ToNow((msg) => {
-        officialStatus.textContent = msg;
-      });
-      official = items;
-      saveOfficialCache(items);
-      officialMeta = loadOfficialCache().meta;
-      toast(toastEl, `당첨번호 ${items.length}개를 저장했어요.`);
-    } catch (err) {
-      officialStatus.textContent = err instanceof Error ? err.message : "불러오기에 실패했어요.";
-    } finally {
-      btnLoadOfficial.disabled = false;
-      renderOfficialStatus();
-    }
-  });
-
-  btnClearOfficial.addEventListener("click", () => {
-    clearOfficialCache();
-    official = [];
-    officialMeta = null;
-    compareTbody.innerHTML = "";
-    compareWrap.style.display = "none";
-    compareSummary.textContent = "";
-    renderOfficialStatus();
-    toast(toastEl, "당첨번호 캐시를 삭제했어요.");
-  });
-
   btnCompareNow.addEventListener("click", () => {
-    compareWithOfficial();
+    compareMyHistory();
     toast(toastEl, "비교를 완료했어요.");
   });
 
   chkShowOnly3.addEventListener("change", () => {
-    if (!last || official.length === 0) return;
-    compareWithOfficial();
+    if (official.length === 0 || history.length === 0) return;
+    compareMyHistory();
   });
 
   compareTbody.addEventListener("click", async (e) => {
     const target = /** @type {HTMLElement} */ (e.target);
     const tr = target.closest("tr");
     if (!tr) return;
-    const drwNo = Number(tr.dataset.drwno);
-    const row = official.find((x) => x.drwNo === drwNo);
-    if (!row) return;
-
     const action = target.dataset.action;
-    if (action === "copyRow" || action === "copyOfficial") {
-      const text = `${row.drwNo}회(${row.drwNoDate}) ${row.nums.join(", ")} + 보너스 ${row.bonus}`;
+    if (action === "loadMy") {
+      // 행의 첫 번째 버튼은 해당 내 기록을 상단에 표시
+      const label = target.textContent || "";
+      const round = Number(label.replace(/\D/g, "")) || null;
+      const entry = round != null ? history.find((h) => h.round === round) : null;
+      if (entry) {
+        setCurrentFromEntry(entry);
+        toast(toastEl, "기록을 불러왔어요.");
+      }
+      return;
+    }
+
+    if (action === "copyOfficial") {
+      // 텍스트에서 회차 추출
+      const label = target.textContent || "";
+      const drawNo = Number(label.replace(/\D/g, "")) || null;
+      const row = drawNo != null ? official.find((x) => x.drawNo === drawNo) : null;
+      if (!row) return;
+      const text = `${row.drawNo}회(${row.date}) ${row.nums.join(", ")} + 보너스 ${row.bonus}`;
       const ok = await copyTextWithFallback(text);
       toast(toastEl, ok ? "클립보드에 복사했어요." : "복사에 실패했어요.");
     }

@@ -132,7 +132,7 @@ body{
   flex-wrap: wrap;
 }
 
-.colMatch{ width: 90px; }
+.colMatch{ width: 110px; }
 
 .matchPill{
   display:inline-flex;
